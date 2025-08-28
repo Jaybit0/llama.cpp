@@ -1,4 +1,5 @@
 #include "llama-impl.h"
+#include "llama-ooc-scheduler.h"
 
 #include "llama-chat.h"
 #include "llama-mmap.h"
@@ -63,6 +64,9 @@ void llama_backend_init(void) {
         struct ggml_context * ctx = ggml_init(params);
         ggml_free(ctx);
     }
+
+    // Initialize optional OOC scheduler from environment (no-op if not set)
+    llama_ooc_init_from_env();
 }
 
 void llama_numa_init(enum ggml_numa_strategy numa) {
@@ -355,4 +359,3 @@ const char * llama_print_system_info(void) {
 
     return s.c_str();
 }
-

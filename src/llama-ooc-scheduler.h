@@ -44,3 +44,7 @@ public:
 void llama_set_ooc_scheduler(llama_ooc_scheduler_i * sched);
 llama_ooc_scheduler_i * llama_get_ooc_scheduler();
 
+// Optional: auto-register a simple scheduler from environment variable.
+// If env var LLAMA_OOC_SCHED is set (e.g. to "basic" or "1"),
+// llama.cpp will install a simple default scheduler.
+void llama_ooc_init_from_env();
