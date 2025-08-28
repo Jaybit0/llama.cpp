@@ -7,6 +7,8 @@
 #include <memory>
 #include <string>
 #include <algorithm>
+#include <vector>
+#include <cstdint>
 
 // Global singleton pointer (non-owning). Users manage lifetime externally.
 static std::atomic<llama_ooc_scheduler_i *> g_llama_ooc_sched{nullptr};
@@ -62,13 +64,98 @@ public:
         }
     }
 
-    void on_eval_node(const llama_model & /*model*/, ggml_backend_sched_t /*sched*/, ggml_tensor * node, bool ask) override {
+    static bool fetch_bytes(ggml_backend_sched_t sched, ggml_tensor * t, std::vector<uint8_t> & out) {
+        if (!t) return false;
+        size_t nbytes = ggml_nbytes(t);
+        if (nbytes == 0) return false;
+        out.resize(nbytes);
+        ggml_backend_t b = ggml_backend_sched_get_tensor_backend(sched, t);
+        if (!b) return false;
+        ggml_backend_tensor_get_async(b, t, out.data(), 0, nbytes);
+        ggml_backend_sched_synchronize(sched);
+        return true;
+    }
+
+    void on_eval_node(const llama_model & /*model*/, ggml_backend_sched_t sched, ggml_tensor * node, bool ask) override {
         if (ask) return; // post-compute observation follows when ask == false
         const char * name = ggml_get_name(node);
         if (!name) return;
-        if (std::strstr(name, "ffn_moe_topk") || std::strstr(name, "ffn_moe_argsort")) {
-            LLAMA_LOG_INFO("ooc/basic: observed expert selection node %s\n", name);
-            // In a real OOC scheduler, fetch selection indices here and plan prefetch/eviction for next step
+        const bool is_args = std::strstr(name, "ffn_moe_argsort") != nullptr;
+        const bool is_topk = std::strstr(name, "ffn_moe_topk")    != nullptr;
+        if (!(is_args || is_topk)) return;
+
+        // fetch raw bytes
+        std::vector<uint8_t> buf;
+        if (!fetch_bytes(sched, node, buf)) {
+            return;
+        }
+
+        const int64_t ne0 = node->ne[0]; // n_expert_used
+        const int64_t ne1 = node->ne[1]; // n_tokens
+        const size_t  nb0 = node->nb[0]; // stride bytes expert index
+        const size_t  nb1 = node->nb[1]; // stride bytes token
+
+        // Log only the first token column to avoid spam in batched cases
+        const int64_t tok = 0;
+
+        if (is_args && node->type == GGML_TYPE_I32) {
+            const uint8_t * base = buf.data();
+            std::vector<int32_t> ids;
+            ids.reserve((size_t) ne0);
+            for (int64_t k = 0; k < ne0; ++k) {
+                const int32_t * p = reinterpret_cast<const int32_t *>(base + tok*nb1 + k*nb0);
+                ids.push_back(*p);
+            }
+            // print indices as [e0,e1,...]
+            std::string s = "[";
+            for (size_t i = 0; i < ids.size(); ++i) {
+                s += std::to_string(ids[i]);
+                if (i + 1 < ids.size()) s += ",";
+            }
+            s += "]";
+            LLAMA_LOG_INFO("ooc/basic: %s layer=%s experts=%s\n", name, std::strrchr(name, '-') ? std::strrchr(name, '-') + 1 : "?", s.c_str());
+        } else if (is_topk) {
+            std::string s;
+
+            if (node->type == GGML_TYPE_F32) {
+                const uint8_t * base = buf.data();
+                std::vector<float> vals;
+                vals.reserve((size_t) ne0);
+                for (int64_t k = 0; k < ne0; ++k) {
+                    const float * p = reinterpret_cast<const float *>(base + tok*nb1 + k*nb0);
+                    vals.push_back(*p);
+                }
+                // print probs as [p0,p1,...]
+                s = "[";
+                for (size_t i = 0; i < vals.size(); ++i) {
+                    char tmp[32];
+                    std::snprintf(tmp, sizeof(tmp), "%.4f", vals[i]);
+                    s += tmp;
+                    if (i + 1 < vals.size()) s += ",";
+                }
+                s += "]";
+            } else if (node->type == GGML_TYPE_I32) {
+                const uint8_t * base = buf.data();
+                std::vector<int32_t> ids;
+                ids.reserve((size_t) ne0);
+                for (int64_t k = 0; k < ne0; ++k) {
+                    const int32_t * p = reinterpret_cast<const int32_t *>(base + tok*nb1 + k*nb0);
+                    ids.push_back(*p);
+                }
+                // print indices as [e0,e1,...]
+                s = "[";
+                for (size_t i = 0; i < ids.size(); ++i) {
+                    s += std::to_string(ids[i]);
+                    if (i + 1 < ids.size()) s += ",";
+                }
+                s += "]";
+            } else {
+                // Print unsupported node type
+                LLAMA_LOG_INFO("ooc/basic: %s layer=%s unsupported type=%s\n", name, std::strrchr(name, '-') ? std::strrchr(name, '-') + 1 : "?", ggml_type_name(node->type));
+                return;
+            }
+
+            LLAMA_LOG_INFO("ooc/basic: %s layer=%s scores=%s\n", name, std::strrchr(name, '-') ? std::strrchr(name, '-') + 1 : "?", s.c_str());
         }
     }
 };
