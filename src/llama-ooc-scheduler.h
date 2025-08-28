@@ -37,6 +37,12 @@ public:
     // Called for each named tensor node while building the compute graph.
     // Use this to steer per-node backend assignment or to trigger prefetch/eviction decisions.
     virtual void on_graph_tensor(const llama_model & /*model*/, const llama_ubatch & /*ubatch*/, ggml_backend_sched_t /*sched*/, ggml_tensor * /*node*/, const char * /*name*/, int /*layer_index*/) {}
+
+    // Called by the scheduler during graph execution for each node when an eval callback is installed.
+    // ask == true: query if you intend to observe this node (for batching decisions). Most implementations can ignore.
+    // ask == false: node has been scheduled for observation; you may inspect results (e.g., expert selection indices)
+    // Note: do not perform heavy synchronous work here; prefer scheduling async prefetch.
+    virtual void on_eval_node(const llama_model & /*model*/, ggml_backend_sched_t /*sched*/, ggml_tensor * /*node*/, bool /*ask*/) {}
 };
 
 // Global registration for a single scheduler instance.

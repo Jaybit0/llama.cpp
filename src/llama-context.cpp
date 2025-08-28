@@ -716,7 +716,30 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         res->reset();
 
         ggml_backend_sched_reset(sched.get());
-        ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
+
+        // Chain user eval callback with OOC scheduler's on_eval_node so we can observe per-node execution
+        struct eval_wrapper {
+            const llama_context * self;
+            ggml_backend_sched_eval_callback user_cb;
+            void * user_ud;
+        };
+        auto * ooc = llama_get_ooc_scheduler();
+        if (ooc || cparams.cb_eval) {
+            auto * wrap = new eval_wrapper{ this, cparams.cb_eval, cparams.cb_eval_user_data };
+            auto trampoline = [](ggml_tensor * t, bool ask, void * ud) -> bool {
+                auto * w = static_cast<eval_wrapper *>(ud);
+                if (auto * sched = llama_get_ooc_scheduler()) {
+                    sched->on_eval_node(w->self->model, w->self->sched.get(), t, ask);
+                }
+                if (w->user_cb) {
+                    return w->user_cb(t, ask, w->user_ud);
+                }
+                return true;
+            };
+            ggml_backend_sched_set_eval_callback(sched.get(), trampoline, wrap);
+        } else {
+            ggml_backend_sched_set_eval_callback(sched.get(), nullptr, nullptr);
+        }
 
         //const auto t_start_us = ggml_time_us();
 

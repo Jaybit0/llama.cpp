@@ -56,9 +56,19 @@ public:
     }
 
     void on_graph_tensor(const llama_model & /*model*/, const llama_ubatch & /*ubatch*/, ggml_backend_sched_t /*sched*/, ggml_tensor * /*node*/, const char * name, int il) override {
-        // For testing, just log MoE nodes once in a while to confirm activation
+        // Build-time only; keep debug-level noise minimal
         if (name && std::strstr(name, "ffn_moe_")) {
-            LLAMA_LOG_DEBUG("ooc/basic: saw node %s (il=%d)\n", name, il);
+            LLAMA_LOG_DEBUG("ooc/basic: build has node %s (il=%d)\n", name, il);
+        }
+    }
+
+    void on_eval_node(const llama_model & /*model*/, ggml_backend_sched_t /*sched*/, ggml_tensor * node, bool ask) override {
+        if (ask) return; // post-compute observation follows when ask == false
+        const char * name = ggml_get_name(node);
+        if (!name) return;
+        if (std::strstr(name, "ffn_moe_topk") || std::strstr(name, "ffn_moe_argsort")) {
+            LLAMA_LOG_INFO("ooc/basic: observed expert selection node %s\n", name);
+            // In a real OOC scheduler, fetch selection indices here and plan prefetch/eviction for next step
         }
     }
 };
