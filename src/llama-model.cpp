@@ -5751,6 +5751,92 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
         }
     }
 
+    // Phase A: optionally split MoE experts into per-expert 2D tensors backed by CPU-owned buffers
+    {
+        const char * env_ooc = getenv("LLAMA_OOC_EXPERTS");
+        bool ooc_experts = env_ooc && (strcmp(env_ooc, "0") != 0) && (strcasecmp(env_ooc, "false") != 0) && (strcasecmp(env_ooc, "off") != 0);
+        if (ooc_experts) {
+            const char * env_mode = getenv("LLAMA_OOC_EXPERTS_MODE");
+            bool eager = env_mode && (strcasecmp(env_mode, "eager") == 0);
+            ggml_backend_dev_t cpu_dev_local = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+            if (!cpu_dev_local) {
+                throw std::runtime_error(format("%s: no CPU backend found", __func__));
+            }
+            ggml_backend_buffer_type_t cpu_buft = ggml_backend_dev_buffer_type(cpu_dev_local);
+
+            for (int il = 0; il < (int) hparams.n_layer; ++il) {
+                auto & L = layers[il];
+                // identify MoE layers by presence of 3D expert tensors
+                const ggml_tensor * tref = L.ffn_up_exps ? L.ffn_up_exps : (L.ffn_gate_exps ? L.ffn_gate_exps : L.ffn_down_exps);
+                if (!tref || ggml_n_dims(tref) < 3) {
+                    continue;
+                }
+
+                const int64_t n0 = tref->ne[0];
+                const int64_t n1 = tref->ne[1];
+                const int64_t n2 = tref->ne[2]; // n_expert
+
+                // create a dedicated context for expert tensors in this layer (metadata only by default)
+                ggml_init_params params_expert_ctx = {
+                    /*.mem_size   =*/ ggml_tensor_overhead()* (size_t) (n2*3 + 4),
+                    /*.mem_buffer =*/ NULL,
+                    /*.no_alloc   =*/ true,
+                };
+                ggml_context * ctx_expert = ggml_init(params_expert_ctx);
+                if (!ctx_expert) {
+                    throw std::runtime_error(format("%s: failed to create ggml context for experts (layer %d)", __func__, il));
+                }
+                pimpl->ctxs.emplace_back(ctx_expert);
+
+                auto make_and_fill = [&](ggml_tensor * monolithic, const char * tag, std::vector<ggml_tensor*> & out_vec, int64_t dim0, int64_t dim1) {
+                    if (!monolithic) return;
+                    out_vec.reserve((size_t) n2);
+                    const size_t slice_bytes = (size_t) monolithic->nb[2];
+                    std::vector<uint8_t> tmp(eager ? slice_bytes : 0);
+                    for (int64_t e = 0; e < n2; ++e) {
+                        ggml_tensor * t2d = ggml_new_tensor_2d(ctx_expert, monolithic->type, dim0, dim1);
+                        if (!t2d) throw std::runtime_error(format("%s: failed to create expert tensor %s (layer %d, expert %lld)", __func__, tag, il, (long long) e));
+                        ggml_set_name(t2d, format("%s.blk.%d.%s.expert.%lld", name.c_str(), il, tag, (long long) e).c_str());
+                        out_vec.push_back(t2d);
+                        if (eager) {
+                            // allocate a CPU buffer for all tensors in this context only in eager mode
+                            // Note: allocation performed once lazily below
+                        }
+                    }
+                };
+
+                make_and_fill(L.ffn_up_exps,   "ffn_up_exps",   L.ffn_up_expert,   n0, n1);
+                make_and_fill(L.ffn_gate_exps, "ffn_gate_exps", L.ffn_gate_expert, n0, n1);
+                make_and_fill(L.ffn_down_exps, "ffn_down_exps", L.ffn_down_expert, n1, n0);
+
+                // If eager mode, allocate and populate
+                if (eager) {
+                    ggml_backend_buffer_t buf_expert = ggml_backend_alloc_ctx_tensors_from_buft(ctx_expert, cpu_buft);
+                    if (!buf_expert) {
+                        throw std::runtime_error(format("%s: unable to allocate CPU buffer for experts (layer %d)", __func__, il));
+                    }
+                    pimpl->bufs.emplace_back(buf_expert);
+
+                    auto fill_data = [&](ggml_tensor * monolithic, const std::vector<ggml_tensor*> & out_vec) {
+                        if (!monolithic) return;
+                        const size_t slice_bytes = (size_t) monolithic->nb[2];
+                        std::vector<uint8_t> tmp(slice_bytes);
+                        for (int64_t e = 0; e < n2; ++e) {
+                            ggml_backend_tensor_get(monolithic, tmp.data(), (size_t) e * slice_bytes, slice_bytes);
+                            ggml_backend_tensor_set(out_vec[(size_t) e], tmp.data(), 0, slice_bytes);
+                        }
+                    };
+
+                    fill_data(L.ffn_up_exps,   L.ffn_up_expert);
+                    fill_data(L.ffn_gate_exps, L.ffn_gate_expert);
+                    fill_data(L.ffn_down_exps, L.ffn_down_expert);
+                }
+
+                LLAMA_LOG_INFO("%s: OOC experts enabled (%s) - split layer %d into %lld expert tensors per MoE weight\n", __func__, eager ? "eager" : "lazy", il, (long long) n2);
+            }
+        }
+    }
+
     // Notify OOC scheduler that model is fully loaded
     if (auto * sched = llama_get_ooc_scheduler()) {
         sched->on_model_loaded(*this);

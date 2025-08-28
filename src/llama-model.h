@@ -264,6 +264,11 @@ struct llama_layer {
     struct ggml_tensor * ffn_down_exps_b = nullptr;
     struct ggml_tensor * ffn_up_exps_b   = nullptr;
 
+    // OOC per-expert storage (enabled when LLAMA_OOC_EXPERTS=1)
+    std::vector<ggml_tensor*> ffn_up_expert;   // [n_embd, n_ff_exp]
+    std::vector<ggml_tensor*> ffn_gate_expert; // [n_embd, n_ff_exp]
+    std::vector<ggml_tensor*> ffn_down_expert; // [n_ff_exp, n_embd]
+
     // ff shared expert (shexp)
     struct ggml_tensor * ffn_gate_inp_shexp = nullptr;
     struct ggml_tensor * ffn_gate_shexp     = nullptr;
