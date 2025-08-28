@@ -1,6 +1,7 @@
 #include "llama-expert-ooc.h"
 #include "llama-model.h"
 #include "llama-impl.h"
+#include "ggml-backend.h"
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -63,7 +64,15 @@ static bool evict_one(ggml_tensor * t, int expert_id, const std::string & dir, c
         LLAMA_LOG_WARN("ooc/evict: failed to write %s\n", path.c_str());
         return false;
     }
-    ggml_backend_tensor_memset(t, 0, slice_off, slice_bytes);
+    // only zero if buffer is a writable CPU buffer; Metal-mapped buffers may be read-only and cause SIGBUS
+    if (t->buffer) {
+        if (ggml_backend_buffer_is_host(t->buffer)) {
+            ggml_backend_dev_t dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer));
+            if (!dev || ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+                ggml_backend_tensor_memset(t, 0, slice_off, slice_bytes);
+            }
+        }
+    }
     return true;
 }
 
@@ -77,7 +86,15 @@ static bool load_one(ggml_tensor * t, int expert_id, const std::string & dir, co
         LLAMA_LOG_WARN("ooc/load: missing %s (expert not previously evicted?)\n", path.c_str());
         return false;
     }
-    ggml_backend_tensor_set(t, buf.data(), slice_off, slice_bytes);
+    // only write back if buffer is a writable CPU buffer; otherwise, skip (mmap will page-in on demand when used)
+    if (t->buffer) {
+        if (ggml_backend_buffer_is_host(t->buffer)) {
+            ggml_backend_dev_t dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer));
+            if (!dev || ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+                ggml_backend_tensor_set(t, buf.data(), slice_off, slice_bytes);
+            }
+        }
+    }
     return true;
 }
 
@@ -109,4 +126,3 @@ bool llama_expert_load(struct llama_model * model, int il, int expert_id) {
     ok &= load_one(L.ffn_down_exps, expert_id, dir, "down");
     return ok;
 }
-

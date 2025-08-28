@@ -169,7 +169,7 @@ public:
         }
         s_idx += "]"; s_val += "]";
         const char * kind = is_logits ? "logits" : is_logitsb ? "logits_biased" : is_probs ? "probs" : "probs_biased";
-        LLAMA_LOG_INFO("ooc/basic: layer=%d %s_top8 idx=%s vals=%s\n", il, kind, s_idx.c_str(), s_val.c_str());
+        //LLAMA_LOG_INFO("ooc/basic: layer=%d %s_top8 idx=%s vals=%s\n", il, kind, s_idx.c_str(), s_val.c_str());
 
         // Track MoE usage and optionally disable unused layers after warmup
         if (disable_unused_ && (is_probs || is_logits)) {
