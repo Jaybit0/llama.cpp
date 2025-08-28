@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <string>
+#include <algorithm>
 
 // Global singleton pointer (non-owning). Users manage lifetime externally.
 static std::atomic<llama_ooc_scheduler_i *> g_llama_ooc_sched{nullptr};
@@ -66,11 +68,33 @@ public:
 void llama_ooc_init_from_env() {
     const char * v = std::getenv("LLAMA_OOC_SCHED");
     if (!v || !*v) {
+        return; // unset → leave as-is
+    }
+    std::string s(v);
+    // trim
+    s.erase(0, s.find_first_not_of(" \t\n\r"));
+    s.erase(s.find_last_not_of(" \t\n\r") + 1);
+    // lowercase
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c){ return (char)std::tolower(c); });
+
+    if (s == "0" || s == "off" || s == "false" || s == "none" || s == "disable" || s == "disabled") {
+        llama_set_ooc_scheduler(nullptr);
+        LLAMA_LOG_INFO("ooc: scheduler disabled via LLAMA_OOC_SCHED=%s\n", v);
         return;
     }
-    // accept any non-empty value; in the future parse types
+
+    // currently supported: basic
+    if (s == "1" || s == "on" || s == "true" || s == "basic") {
+        static std::unique_ptr<llama_ooc_scheduler_basic> holder;
+        holder.reset(new llama_ooc_scheduler_basic());
+        llama_set_ooc_scheduler(holder.get());
+        LLAMA_LOG_INFO("ooc: installed basic scheduler via LLAMA_OOC_SCHED=%s\n", v);
+        return;
+    }
+
+    // fallback: unknown value → install basic but warn
     static std::unique_ptr<llama_ooc_scheduler_basic> holder;
     holder.reset(new llama_ooc_scheduler_basic());
     llama_set_ooc_scheduler(holder.get());
-    LLAMA_LOG_INFO("ooc: installed basic scheduler via LLAMA_OOC_SCHED=%s\n", v);
+    LLAMA_LOG_WARN("ooc: unknown LLAMA_OOC_SCHED='%s' → defaulting to 'basic'\n", v);
 }
