@@ -6,6 +6,7 @@
 #include "llama-memory.h"
 #include "llama-mmap.h"
 #include "llama-model.h"
+#include "llama-ooc-scheduler.h"
 
 #include <cinttypes>
 #include <cstring>
@@ -1467,6 +1468,11 @@ llm_graph_cb llama_context::graph_get_cb() const {
                     }
                 }
             }
+        }
+
+        // Forward to OOC scheduler for custom per-node logic (e.g., prefetch/evict decisions)
+        if (auto * sched_ooc = llama_get_ooc_scheduler()) {
+            sched_ooc->on_graph_tensor(model, ubatch, sched.get(), cur, name, il);
         }
     };
 }

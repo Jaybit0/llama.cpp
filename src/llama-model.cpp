@@ -5,6 +5,7 @@
 #include "llama-batch.h"
 #include "llama-cparams.h"
 #include "llama-model-loader.h"
+#include "llama-ooc-scheduler.h"
 
 #include "llama-kv-cache.h"
 #include "llama-kv-cache-iswa.h"
@@ -2165,6 +2166,19 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                     throw std::runtime_error("no CPU backend found");
                 }
                 buft = ggml_backend_dev_buffer_type(cpu_dev);
+            }
+
+            // OOC scheduler: allow override of weight placement per tensor
+            if (auto * sched = llama_get_ooc_scheduler()) {
+                // note: ggml_op is an enum in ggml; use int here to avoid header coupling
+                int usage_op = (int) op;
+                const int layer_index = tn.bid;
+                const auto & candidates = *buft_list;
+                ggml_backend_dev_t assigned_dev = candidates.front().first;
+                if (ggml_backend_buffer_type_t ovrd = sched->override_weight_buffer_type(
+                        *this, tn.str().c_str(), layer_index, usage_op, assigned_dev, candidates, buft)) {
+                    buft = ovrd;
+                }
             }
 
             if (buft != buft_list->front().second) {
@@ -5735,6 +5749,11 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
         for (auto & mapping : ml.mappings) {
             pimpl->mappings.emplace_back(std::move(mapping));
         }
+    }
+
+    // Notify OOC scheduler that model is fully loaded
+    if (auto * sched = llama_get_ooc_scheduler()) {
+        sched->on_model_loaded(*this);
     }
 
     return true;
