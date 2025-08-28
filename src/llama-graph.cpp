@@ -8,6 +8,7 @@
 #include "llama-kv-cache-iswa.h"
 #include "llama-memory-hybrid.h"
 #include "llama-memory-recurrent.h"
+#include "llama-ooc-scheduler.h"
 
 #include <cassert>
 #include <cmath>
@@ -831,6 +832,15 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     const int64_t n_embd   = cur->ne[0];
     const int64_t n_tokens = cur->ne[1];
     const bool weight_before_ffn = arch == LLM_ARCH_LLAMA4; // for llama4, we apply the sigmoid-ed weights before the FFN
+
+    // Allow OOC scheduler to disable MoE layer entirely (pass-through via residual)
+    if (auto * ooc = llama_get_ooc_scheduler()) {
+        if (!ooc->moe_layer_enabled(il)) {
+            ggml_tensor * zero = ggml_scale(ctx0, cur, 0.0f);
+            cb(zero, "ffn_moe_out_disabled", il);
+            return zero;
+        }
+    }
 
     ggml_tensor * logits = nullptr;
 

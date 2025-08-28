@@ -33,6 +33,7 @@ add_library(llama
             llama-sampling.cpp
             llama-vocab.cpp
             llama-ooc-scheduler.cpp
+            llama-expert-ooc.cpp
             unicode-data.cpp
             unicode.cpp
             unicode.h

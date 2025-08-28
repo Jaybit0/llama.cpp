@@ -1464,6 +1464,10 @@ ggml_status llama_context::graph_compute(
 
 llm_graph_cb llama_context::graph_get_cb() const {
     return [&](const llama_ubatch & ubatch, ggml_tensor * cur, const char * name, int il) {
+        // Allow OOC scheduler to run pending per-build actions (e.g., evictions/loads) once per graph build
+        if (auto * sched_ooc = llama_get_ooc_scheduler()) {
+            sched_ooc->on_graph_build_tick(model, sched.get());
+        }
         if (il >= 0) {
             ggml_format_name(cur, "%s-%d", name, il);
         } else {

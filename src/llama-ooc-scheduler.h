@@ -43,6 +43,13 @@ public:
     // ask == false: node has been scheduled for observation; you may inspect results (e.g., expert selection indices)
     // Note: do not perform heavy synchronous work here; prefer scheduling async prefetch.
     virtual void on_eval_node(const llama_model & /*model*/, ggml_backend_sched_t /*sched*/, ggml_tensor * /*node*/, bool /*ask*/) {}
+
+    // Query whether a MoE layer is enabled for compute. If false, graph builders may bypass MoE and pass through residual.
+    // Default: always enabled.
+    virtual bool moe_layer_enabled(int /*il*/) const { return true; }
+
+    // Called repeatedly during graph build; schedulers can apply pending mutations (e.g., load/evict) once per build.
+    virtual void on_graph_build_tick(const llama_model & /*model*/, ggml_backend_sched_t /*sched*/) {}
 };
 
 // Global registration for a single scheduler instance.
